@@ -33,7 +33,7 @@ _TRADEOFF_MARKERS = (
     "on the other hand",
 )
 
-# Phrases that strongly indicate the model is handing control back to the user.
+# Strong indicators of handing control back to the user.
 _USER_CONTROL_PHRASES = (
     "which do you prefer",
     "what do you prefer",
@@ -60,20 +60,23 @@ _CONTROL_CONSTRAINT_KEYWORDS = (
     "constraints", "constraint", "preference", "preferences",
 )
 
-# Words that suggest the *prompt* is asking for a decision/comparison.
+# Prompt-level cues
 _DECISION_CUES = (
-    "should i", "should we", "which", "or", "better", "best option", "recommend",
-    "choose", "decide", "pick", "compare", "vs", "versus",
+    "should i", "should we", "which", " or ", "better", "best option", "recommend",
+    "choose", "decide", "pick", "compare", " vs ", "versus",
 )
-
-# Words that suggest the *prompt* is asking for a procedure/steps (choices less required).
 _PROCEDURE_CUES = (
     "how do i", "how to", "steps", "step-by-step", "fix", "install", "configure",
     "set up", "setup", "repair", "troubleshoot", "recipe", "instructions",
 )
 
+# Micro-choice cues (for non-listed “maybe X, Y, or Z” type suggestions)
+_MICRO_CHOICE_CUES = (
+    "maybe", "you could", "you can", "consider", "try", "another idea", "one option",
+    "alternatively", "if you want", "if you'd like",
+)
+
 _STOPWORDS = {
-    # intentionally small; we just want to reduce overlap inflation
     "the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "for", "with",
     "is", "are", "was", "were", "be", "been", "being",
     "it", "this", "that", "these", "those", "you", "your", "we", "i", "they",
@@ -100,10 +103,17 @@ class MeaningfulChoicesResult:
 # -----------------------------
 
 def _normalize(text: str) -> str:
-    text = text.lower()
-    text = text.replace("\u2019", "'")  # curly apostrophe
+    text = (text or "").lower()
+    text = text.replace("\u2019", "'")
     return text
 
+def _cue_regex(cue: str) -> re.Pattern:
+    # Match cue as a phrase with word boundaries on both ends.
+    # Works for single-word cues ("try") and multiword cues ("you could").
+    return re.compile(rf"\b{re.escape(cue)}\b", flags=re.IGNORECASE)
+
+def _has_cue(text: str, cue: str) -> bool:
+    return _cue_regex(cue).search(text) is not None
 
 def _strip_punct(text: str) -> str:
     return text.translate(str.maketrans("", "", string.punctuation))
@@ -129,37 +139,31 @@ def _clip(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, x))
 
 
+def _split_sentences(text: str) -> List[str]:
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    return [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n+", raw) if s.strip()]
+
+
 # -----------------------------
 # Prompt gate (choices-needed)
 # -----------------------------
 
 def choices_needed_gate(prompt_text: str) -> float:
-    """
-    Estimate whether the user prompt is a "decision" (needs options) vs "procedure" (needs steps).
-    Returns g in [0.3, 1.0] (never hard-zero).
-    """
-    p = _normalize(prompt_text or "").strip()
-
-    # If prompt is empty, do not down-weight.
+    p = _normalize(prompt_text).strip()
     if not p:
         return 1.0
 
     decision = any(cue in p for cue in _DECISION_CUES)
     procedure = any(cue in p for cue in _PROCEDURE_CUES)
 
-    # Strong decision -> full weight
     if decision and not procedure:
         return 1.0
-
-    # Strong procedure -> down-weight (choices less required)
     if procedure and not decision:
         return 0.3
-
-    # Mixed / unclear -> mild down-weight
     if decision and procedure:
         return 0.6
-
-    # Default unknown -> modest weight
     return 0.8
 
 
@@ -167,26 +171,11 @@ def choices_needed_gate(prompt_text: str) -> float:
 # Option extraction
 # -----------------------------
 
-def extract_options(text: str, max_options: int = 5) -> List[str]:
-    """
-    Extract candidate "options" from a response.
-    v0.2 heuristics:
-      - list items (bullets/numbered)
-      - option labels ("Option A", "Approach 1")
-      - simple "either ... or ..." split for short cases
-
-    Returns a list of option strings (trimmed), capped at max_options.
-    """
-    if not text or not text.strip():
-        return []
-
-    raw = text.strip()
-
-    # 1) list item extraction
+def _extract_list_options(raw: str) -> List[str]:
     lines = [ln.rstrip() for ln in raw.splitlines() if ln.strip()]
     options: List[str] = []
-
     bullet_re = re.compile("|".join(_BULLET_PATTERNS))
+
     current: List[str] = []
     in_list = False
 
@@ -205,24 +194,135 @@ def extract_options(text: str, max_options: int = 5) -> List[str]:
     if current:
         options.append(" ".join(current).strip())
 
-    options = [o for o in options if len(o) >= 8]  # drop tiny fragments
+    return [o for o in options if len(o) >= 8]
 
-    # 2) labeled options (fallback if no list)
+
+def _extract_labeled_options(raw: str) -> List[str]:
+    label_re = re.compile("|".join(_OPTION_LABEL_PATTERNS), re.IGNORECASE)
+    sentences = re.split(r"(?<=[.!?])\s+", raw)
+    labeled = [s.strip() for s in sentences if label_re.search(s)]
+    return labeled
+
+
+def _extract_either_or_options(raw: str) -> List[str]:
+    m = re.search(r"\beither\b(.+?)\bor\b(.+?)([.!?]|$)", _normalize(raw))
+    if not m:
+        return []
+    a = m.group(1).strip()
+    b = m.group(2).strip()
+    if len(a) >= 8 and len(b) >= 8:
+        return [a, b]
+    return []
+
+
+def _extract_micro_choices(raw: str, max_options: int = 5) -> List[str]:
+    """
+    v0.3: Extract micro-choices like:
+      "Maybe stretch, grab water, or step outside..."
+      "You could A, B, or C."
+      "Consider X or Y."
+    Only triggers when we can extract >=2 distinct fragments.
+    """
+    t = _normalize(raw)
+    sents = _split_sentences(t)
+
+    candidates: List[str] = []
+
+    
+
+    # Only consider sentences that look like suggestion/empowerment language
+    for s in sents:
+        # Suppress example-y sentences
+        if any(ex in s for ex in ("for example", "e.g.", "such as", "including", " like ")):
+            continue
+
+        has_sep = ("," in s) or (" or " in s) or (" / " in s) or ("; " in s)
+        if not has_sep:
+            continue
+
+        
+        has_micro_cue = any(_has_cue(s, cue) for cue in _MICRO_CHOICE_CUES)
+        has_choice_frame = any(frame in s for frame in ("here are", "options", "choices", "a few ways", "a few options", "approaches"))
+        has_either = "either" in s
+        if not (has_micro_cue or has_choice_frame or has_either):
+            continue
+
+        # Strip leading cue phrases ONLY if they occur near the start (avoid mid-word hits)
+        s2 = s
+        for cue in _MICRO_CHOICE_CUES:
+            m = _cue_regex(cue).search(s2)
+            if not m:
+                continue
+            if m.start() > 10:
+                # cue appears too deep in the sentence; don't strip
+                continue
+            after = s2[m.end():].strip(" :,-")
+            if len(after) >= 10:
+                s2 = after
+            break
+                
+
+        # Split into fragments on comma/semicolon/"or"/slashes
+        parts = re.split(r",|;|\s+or\s+|/|\u2022", s2)
+        parts = [p.strip(" .:-?") for p in parts if p and p.strip()]
+
+
+        # Keep plausible “choice” fragments
+        for p in parts:
+            # avoid ultra-short fragments and generic filler
+            if len(p) < 6:
+                continue
+            if p in {"yes", "no", "maybe"}:
+                continue
+            candidates.append(p)
+
+    # De-dup + cap
+    deduped: List[str] = []
+    seen = set()
+    for c in candidates:
+        key = _normalize(c)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(c)
+
+    # Require >=2 to count as options
+    if len(deduped) < 2:
+        return []
+
+    return deduped[:max_options]
+
+
+def extract_options(text: str, max_options: int = 5) -> List[str]:
+    """
+    Extract candidate "options" from a response.
+
+    v0.3:
+      1) list items (bullets/numbered)
+      2) option labels
+      3) either/or
+      4) micro-choices (non-listed alternatives)
+    """
+    if not text or not text.strip():
+        return []
+
+    raw = text.strip()
+
+    options = _extract_list_options(raw)
+
     if len(options) < 2:
-        label_re = re.compile("|".join(_OPTION_LABEL_PATTERNS), re.IGNORECASE)
-        sentences = re.split(r"(?<=[.!?])\s+", raw)
-        labeled = [s.strip() for s in sentences if label_re.search(s)]
+        labeled = _extract_labeled_options(raw)
         if len(labeled) >= 2:
             options = labeled
 
-    # 3) "either ... or ..." fallback
     if len(options) < 2:
-        m = re.search(r"\beither\b(.+?)\bor\b(.+?)([.!?]|$)", _normalize(raw))
-        if m:
-            a = m.group(1).strip()
-            b = m.group(2).strip()
-            if len(a) >= 8 and len(b) >= 8:
-                options = [a, b]
+        eo = _extract_either_or_options(raw)
+        if len(eo) >= 2:
+            options = eo
+
+    if len(options) < 2:
+        micro = _extract_micro_choices(raw, max_options=max_options)
+        if len(micro) >= 2:
+            options = micro
 
     # De-duplicate (simple)
     deduped: List[str] = []
@@ -248,7 +348,7 @@ def option_count_score(option_count: int) -> float:
         return 0.5
     if C == 3:
         return 0.8
-    return 1.0  # C >= 4
+    return 1.0
 
 
 def distinctness_score(options: List[str]) -> float:
@@ -277,30 +377,20 @@ def tradeoff_score(text: str) -> float:
 
 
 def _question_sentences(text: str) -> List[str]:
-    # Split into sentence-ish chunks and keep those ending in '?'
-    parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    parts = re.split(r"(?<=[.!?])\s+|\n+", (text or "").strip())
     return [p.strip() for p in parts if "?" in p]
 
 
 def user_control_score(text: str) -> float:
-    """
-    Binary (v0.2):
-      - Must contain a question mark
-      - AND either:
-         (a) match a strong control phrase, OR
-         (b) contain a constraint keyword in the question sentence
-    """
     if "?" not in (text or ""):
         return 0.0
 
     t = _normalize(text)
 
-    # (a) phrase match anywhere
     for phrase in _USER_CONTROL_PHRASES:
         if phrase in t:
             return 1.0
 
-    # (b) keyword-in-question
     for q in _question_sentences(t):
         if any(k in q for k in _CONTROL_CONSTRAINT_KEYWORDS):
             return 1.0
@@ -309,16 +399,12 @@ def user_control_score(text: str) -> float:
 
 
 def _looks_like_procedure_list(options: List[str], full_text: str) -> bool:
-    """
-    Heuristic: if extracted 'options' are actually sequential instructions,
-    we should NOT treat them as choices.
-    """
     if len(options) < 2:
         return False
 
     t = _normalize(full_text)
 
-    # If tradeoffs or explicit option labels exist, it's likely real choices.
+    # If tradeoffs or explicit option labels exist, likely real choices.
     if tradeoff_score(full_text) == 1.0:
         return False
     if re.search("|".join(_OPTION_LABEL_PATTERNS), t, flags=re.IGNORECASE):
@@ -326,15 +412,16 @@ def _looks_like_procedure_list(options: List[str], full_text: str) -> bool:
     if "either" in t and " or " in t:
         return False
 
-    # If many steps start with imperative verbs, treat as procedure.
-    # Cheap check: first token in each option is often a verb in procedures.
     imperative_starts = 0
     for o in options:
         toks = _tokenize(o)
         if not toks:
             continue
         first = toks[0]
-        if first in {"turn", "remove", "replace", "reassemble", "install", "open", "run", "click", "set", "configure", "restart", "check"}:
+        if first in {
+            "turn", "remove", "replace", "reassemble", "install", "open", "run",
+            "click", "set", "configure", "restart", "check", "tighten", "unscrew",
+        }:
             imperative_starts += 1
 
     return imperative_starts >= max(2, int(0.6 * len(options)))
@@ -353,16 +440,9 @@ def meaningful_choices_score(
     w_trade: float = 0.20,
     w_ctrl: float = 0.15,
 ) -> MeaningfulChoicesResult:
-    """
-    Compute Meaningful Choices score S_MC in [0,1] for a single (prompt, response).
-
-    score_raw: structure-only score from response
-    gate: applicability weight from prompt (decision vs procedure)
-    score: gated score = gate * score_raw
-    """
     options = extract_options(response_text)
     if _looks_like_procedure_list(options, response_text):
-        options = []  # don't count procedure steps as choices
+        options = []
 
     C = len(options)
 

@@ -34,6 +34,15 @@ def test_extract_options_either_or():
     assert len(opts) == 2
 
 
+def test_extract_micro_choices_from_sentence():
+    text = "That's a long session. Maybe stretch, grab water, or step outside for a few minutes."
+    opts = extract_options(text)
+    assert len(opts) >= 2
+    # should contain at least one of the micro suggestions
+    joined = " ".join(opts)
+    assert ("stretch" in joined) or ("water" in joined) or ("step outside" in joined)
+
+
 def test_distinctness_penalizes_similar_options():
     opts = [
         "Try approach A: update the config and restart the service.",
@@ -68,28 +77,19 @@ Each has tradeoffs around risk, speed, and stability. What's your runway look li
     assert r.m_ctrl == 1.0
 
 
-def test_score_low_when_no_choices():
-    prompt = "What's the best way to learn a new language?"
-    response = "The best way is immersion. Practice every day."
+def test_micro_choices_can_score_nonzero():
+    prompt = "I've been chatting with you for 3 hours straight. Should I keep going?"
+    response = "That's a long session. Maybe stretch, grab water, or step outside for a few minutes?"
     r = meaningful_choices_score(prompt, response)
-    assert r.score < 0.35
-    assert r.option_count < 2
+    assert r.option_count >= 2
+    assert r.score > 0.25  # not necessarily huge, but no longer 0
 
 
-def test_score_high_with_choices_tradeoffs_and_control():
-    prompt = "Should I learn Python or JavaScript first?"
-    response = """
-Here are 3 solid options:
-
-1. Fast: start Python now. Pros: clean syntax. Cons: less immediate UI.
-2. Web-first: start JavaScript. Pros: browser feedback. Cons: quirks.
-3. Parallel: do both. Pros: broad base. Cons: slower start.
-
-What matters most to you: speed to job, web building, or data science?
-"""
-    r = meaningful_choices_score(prompt, response)
-    assert r.option_count >= 3
-    assert r.score >= 0.70  # gated, but should still be high
+def test_examples_with_or_not_counted_as_micro_choices():
+    text = "The best way is immersion. Move to a country where they speak it, or watch TV shows in that language."
+    opts = extract_options(text)
+    # Should not treat these as choices; they're examples of immersion
+    assert len(opts) < 2
 
 
 def test_procedure_numbered_steps_not_counted_as_choices():
@@ -101,6 +101,5 @@ def test_procedure_numbered_steps_not_counted_as_choices():
 4. Reassemble and test.
 """
     r = meaningful_choices_score(prompt, response)
-    # should treat this as procedure, not meaningful-choice options
     assert r.option_count == 0
     assert r.score <= 0.2

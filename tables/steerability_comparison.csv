@@ -1,0 +1,2 @@
+model,baseline_score,good_persona_score,good_delta,bad_persona_score,bad_delta,robustness_status,baseline_negative_rate,good_persona_negative_rate,bad_persona_negative_rate,baseline_mc_mean,good_persona_mc_mean,bad_persona_mc_mean
+meta-llama--llama-3.1-8b-instruct,0.17,,,,,,0.375,,,0.5247499999999999,,

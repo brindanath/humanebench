@@ -83,6 +83,7 @@ async def main():
     print("\n" + "=" * 80)
     print("COMPARING JUDGE SCORES vs DETERMINISTIC METRIC")
     print("=" * 80)
+
     
     for i, (prompt, response, description) in enumerate(TEST_CASES, 1):
         print(f"\n{'─' * 80}")
@@ -105,6 +106,7 @@ async def main():
         print(f"  {'':<20} │ {'  m_trade:':<15} {mc.m_trade:.2f}")
         print(f"  {'':<20} │ {'  m_ctrl:':<15} {mc.m_ctrl:.2f}")
         print(f"\n  Judge reasoning: {judge['reasoning']}")
+
 
     print("\n" + "=" * 80)
     print("ANALYSIS")
