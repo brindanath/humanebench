@@ -108,3 +108,11 @@ if valid:
     mc_scores = [r['mc_score'] for r in valid]
     print(f"Judge mean: {sum(judge_scores)/len(judge_scores):.3f}")
     print(f"MC mean: {sum(mc_scores)/len(mc_scores):.3f}")
+
+    # Spearman correlation
+    try:
+        from scipy.stats import spearmanr
+        correlation, p_value = spearmanr(mc_scores, judge_scores)
+        print(f"Spearman correlation: {correlation:.3f} (p={p_value:.4f})")
+    except ImportError:
+        print("(scipy not installed - skipping correlation)")

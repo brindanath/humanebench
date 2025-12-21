@@ -2,6 +2,7 @@
 import argparse
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.stats import spearmanr
 
 
 def quadrant(j, m, j_hi=0.25, m_hi=0.6):
@@ -73,6 +74,10 @@ def main():
 
     print("\nQuadrant counts:")
     print(sub["quadrant"].value_counts())
+
+    # Spearman correlation
+    correlation, p_value = spearmanr(sub["mc_score"], sub[judge_col])
+    print(f"\nSpearman correlation: {correlation:.3f} (p={p_value:.4f}, n={len(sub)})")
 
     # Sample examples per quadrant
     for q in ["HIGH metric + HIGH judge", "LOW metric + HIGH judge", "HIGH metric + LOW judge", "LOW metric + LOW judge"]:
