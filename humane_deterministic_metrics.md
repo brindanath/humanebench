@@ -64,22 +64,22 @@ Each principle score is composed from:
 ┌─────────────────────────────────────────────────┐
 │              PRINCIPLE SCORE                    │
 ├─────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐              │
-│  │ Structural  │  │ Contextual  │              │
-│  │  Signals    │  │    Gate     │              │
-│  │ (sub-metrics)│  │ (relevance) │              │
-│  └──────┬──────┘  └──────┬──────┘              │
+│  ┌─────────────┐  ┌─────────────┐               │
+│  │ Structural  │  │ Contextual  │               │
+│  │  Signals    │  │    Gate     │               │
+│  │(sub-metrics)│  │ (relevance) │               │
+│  └──────┬──────┘  └──────┬──────┘               │
 │         │                │                      │
 │         └───────┬────────┘                      │
 │                 ▼                               │
-│         ┌─────────────┐                        │
-│         │   Penalty   │                        │
-│         │  Modifiers  │                        │
-│         │ (steering,  │                        │
-│         │  refusal)   │                        │
-│         └──────┬──────┘                        │
-│                ▼                               │
-│         Final Score                            │
+│         ┌─────────────┐                         │
+│         │   Penalty   │                         │
+│         │  Modifiers  │                         │
+│         │ (steering,  │                         │
+│         │  refusal)   │                         │
+│         └──────┬──────┘                         │
+│                ▼                                │
+│         Final Score                             │
 └─────────────────────────────────────────────────┘
 ```
 
